@@ -25,11 +25,6 @@ solver.
 This code is built on the [MMRec](https://github.com/enoche/MMRec) toolbox; we
 thank its authors for their open-source work.
 
-> ⚠️ **Status.** This repository accompanies a paper currently under review. A
-> few non-core routines (the user–user graph construction in `get_knn_uu_mat`
-> and the low-level message passing in `GraphConvLayer`) are stubbed here and
-> will be released in full once the paper is accepted.
-
 ---
 
 ## How the model is organized
