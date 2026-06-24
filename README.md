@@ -1,59 +1,72 @@
 # TRIAD: Resolvability-Typed Adaptive Intent Hierarchies for Multimodal Recommendation
 
-This repository contains the reference implementation of
+Reference implementation of **TRIAD**, a multimodal recommender that decides
+*how much* intent modeling each user needs from the structure of their own
+multimodal evidence.
 
-> **TRIAD: Resolvability-Typed Adaptive Intent Hierarchies for Multimodal Recommendation.**
+The idea is one exact object. For every user we take the total dispersion of the
+multimodal signals across the items they consumed and split it, by the law of
+total variance, into three additive parts:
 
-TRIAD is a multimodal recommender organized around a single object: an **exact
-three-term variance decomposition** of a user's multimodal evidence. Each item
-modality is given a closed-form distributional representation whose dispersion is
-read in one forward pass and **certified offline** against a neighborhood-coupled
-flow-matching gold standard. By the law of total variance, a user's total
-dispersion splits exactly into
+- **`B_u` — between-item breadth:** how far apart the consumed items lie (broad,
+  diverse taste). This is *resolvable* — finer intent codes can separate it.
+- **`G_u` — between-modality gap:** how much an item's visual and textual signals
+  disagree.
+- **`W_u` — within-item fuzziness:** how noisy each item's evidence is on its own.
+  This is *irreducible* — no amount of depth removes it.
 
-- **`B_u` — between-item breadth** (how far apart the consumed items lie; *resolvable*),
-- **`G_u` — between-modality gap** (how much the visual and textual signals disagree),
-- **`W_u` — within-item fuzziness** (how noisy each item's evidence is; *irreducible*).
+TRIAD turns this typed ambiguity into a **per-user adaptive intent depth**: a
+residual-quantized intent hierarchy that goes **deeper** when a user's breadth is
+resolvable and **halts earlier** when their evidence is merely fuzzy. The
+dispersion that drives this is read cheaply at serving time and certified
+offline against a flow-matching gold standard, so it never costs a per-query
+solver.
 
-This typed ambiguity drives a **resolvability-typed adaptive intent depth**: a
-residual-quantized intent hierarchy whose per-user depth goes *deeper* on
-resolvable breadth and *halts earlier* on irreducible fuzziness.
+This code is built on the [MMRec](https://github.com/enoche/MMRec) toolbox; we
+thank its authors for their open-source work.
 
-The implementation is built on the [MMRec](https://github.com/enoche/MMRec)
-toolbox; we thank its authors for their open-source contribution.
+> ⚠️ **Status.** This repository accompanies a paper currently under review. A
+> few non-core routines (the user–user graph construction in `get_knn_uu_mat`
+> and the low-level message passing in `GraphConvLayer`) are stubbed here and
+> will be released in full once the paper is accepted.
 
 ---
 
-## Paper ↔ Code map
+## How the model is organized
 
-The core model lives in [`src/models/triad.py`](src/models/triad.py). Classes and
-methods are named to mirror the methodology section of the paper:
+The whole model lives in [`src/models/triad.py`](src/models/triad.py). A forward
+pass flows through these components, each implemented as its own class:
 
-| Paper component (section) | Code object (`src/models/triad.py`) |
-| --- | --- |
-| Multimodal graph backbone (Sec. IV-D) | `CollaborativeGraphConv`, `ContentGraphConv`, `ModalityProjection`, `GraphConvLayer` |
-| Within-item dispersion `w̃_i` / flow audit `L_FM` (Sec. IV-B, IV-E) | `FlowDispersionSensor` (+ `ConditionalVectorField`) |
-| Three-term variance decomposition `B_u + G_u + W_u` (Sec. IV-C) | `TRIAD._user_dispersion`, `FlowDispersionSensor.served_dispersion` |
-| Stable residual-quantized codebook level (Sec. IV-F) | `ResidualQuantizer` |
-| Resolvability-typed adaptive intent depth (Sec. IV-F, IV-G) | `AdaptiveIntentHierarchy` |
-| Depth-attention aggregation `u_u^{(d)} = h_u + Σ α_l c_u^{(l)}` (Sec. IV-G) | `DepthAttentionAggregator` |
-| Full model, prediction & optimization (Sec. IV-H) | `TRIAD` |
+1. **Multimodal graph backbone** — a LightGCN-style backbone with a
+   *collaborative* branch over user/item ID embeddings and a *content* branch
+   that smooths projected visual/textual features over a frozen item–item kNN
+   graph.
+   → `CollaborativeGraphConv`, `ContentGraphConv`, `ModalityProjection`,
+   `GraphConvLayer`
 
-### Loss terms (Sec. IV-H)
+2. **Within-item dispersion sensor** — a per-modality conditional flow matched to
+   each item's collaborative neighborhood. It produces the per-item dispersion
+   used downstream, and doubles as the offline audit that certifies the cheap
+   served signal.
+   → `FlowDispersionSensor` (with `ConditionalVectorField`)
 
-The training objective combines a ranking loss with the module-specific terms;
-the configuration weights map to the paper symbols as:
+3. **Per-user variance decomposition** — item-level dispersion is aggregated into
+   each user's within-item fuzziness `W_u`, the typed signal the depth rule
+   consumes.
+   → `TRIAD._user_dispersion`, `FlowDispersionSensor.served_dispersion`
 
-| Config key (`configs/model/TRIAD.yaml`) | Paper symbol | Role |
-| --- | --- | --- |
-| `beta1` | `β₁` | dispersion (flow audit / NLL) loss weight |
-| `beta2` | `β₂` | intent codebook commitment loss weight |
-| `lambda_cross` | — | between-modality (cross-modal flow) synergy weight |
-| `lambda1` | — | self-supervised contrastive loss weight |
+4. **Adaptive intent hierarchy** — the user representation is decomposed into a
+   coarse-to-fine sequence of intent codes by residual quantization, with a
+   per-user halting rule that stops going deeper once the user's fuzziness says
+   extra codes would only chase noise.
+   → `AdaptiveIntentHierarchy` (with `ResidualQuantizer`)
 
-> **Note.** A few non-core routines (the user–user graph construction in
-> `get_knn_uu_mat` and the low-level message passing in `GraphConvLayer`) are
-> stubbed in this release and will be published in full upon paper acceptance.
+5. **Depth-attention aggregation** — the active intent codes are combined back
+   into the final user representation by content-based attention.
+   → `DepthAttentionAggregator`
+
+The final score for a user–item pair is the dot product of the depth-selected
+user representation and the item representation.
 
 ---
 
@@ -82,13 +95,13 @@ the configuration weights map to the paper symbols as:
 ## Environment
 
 The code is developed and tested under the same environment as MMRec. Install
-the dependencies from the MMRec `requirements.txt`:
+its dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Key dependencies: PyTorch, PyTorch Geometric (`torch_geometric`, `torch_scatter`),
+Key packages: PyTorch, PyTorch Geometric (`torch_geometric`, `torch_scatter`),
 NumPy, SciPy, PyYAML.
 
 ---
@@ -96,14 +109,11 @@ NumPy, SciPy, PyYAML.
 ## Data
 
 We use three public multimodal benchmarks with pre-extracted visual (V) and
-textual (T) item features:
+textual (T) item features: **Amazon-Baby**, **Amazon-Sports**, and **TikTok**.
+The Baby and Sports subsets follow the MMRec data format.
 
-- **Amazon-Baby** and **Amazon-Sports** (Amazon review collection)
-- **TikTok** (keyframe visual + textual features)
-
-The Baby and Sports subsets follow the MMRec data format. Place each dataset
-under `./data/<dataset_name>/` (the path is set by `data_path` in
-`src/configs/overall.yaml`, default `../data/`), e.g.:
+Place each dataset under `./data/<dataset_name>/` (the path is set by `data_path`
+in `src/configs/overall.yaml`, default `../data/`):
 
 ```
 data/
@@ -136,8 +146,6 @@ cd src
 python main.py --model TRIAD --dataset baby
 ```
 
-Arguments:
-
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--model`, `-m` | `TRIAD` | model name (resolves to `models/triad.py` and `configs/model/TRIAD.yaml`) |
@@ -150,17 +158,26 @@ are written to the run log.
 
 ---
 
-## Citation
+## Configuration
 
-If you find this work useful, please cite:
+The main knobs live in `src/configs/model/TRIAD.yaml`:
 
-```bibtex
-@article{miao2024triad,
-  title   = {TRIAD: Resolvability-Typed Adaptive Intent Hierarchies for Multimodal Recommendation},
-  author  = {Miao, Yuchen and Wang, Zijun and Liu, Ke and Liu, Xulong},
-  year    = {2024}
-}
-```
+| Key | Meaning |
+| --- | --- |
+| `embedding_size`, `n_layers`, `n_mm_layers`, `knn_k`, `mm_image_weight` | backbone size and graph propagation |
+| `intent_depth` | maximum number of intent-codebook levels `L` |
+| `intent_codebook_size` | entries per codebook level |
+| `halt_rate` | rate of the fuzziness-typed halting threshold |
+| `depth_gamma`, `lambda_div` | depth-attention penalty and codebook diversity weights |
+| `lambda_cross` | cross-modal (between-modality) synergy weight in the dispersion sensor |
+| `beta1` | weight of the dispersion (flow audit) loss |
+| `beta2` | weight of the intent commitment loss |
+| `cl_weight`, `lambda1`, `epsilon` | self-supervised contrastive view and its loss weight |
+
+Global training and evaluation settings (epochs, batch size, metrics, top-K)
+live in `src/configs/overall.yaml`.
+
+---
 
 ## Acknowledgements
 
